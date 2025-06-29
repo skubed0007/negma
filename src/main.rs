@@ -303,7 +303,17 @@ fn handle_nix(args: &[String], cfg: &CFG) {
             }
         }
         "gc" => run_nix_env(vec!["collect-garbage", "-d"]),
-        "make" => run_nix_env(vec!["rebuild", "switch"]),
+        "make" => {
+    println!("{} Running nixos-rebuild switch...", "[negma]".green().bold());
+    let status = Command::new("nixos-rebuild")
+        .arg("switch")
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status();
+    exit_if_fail(status, "nixos-rebuild switch failed");
+},
+
         "list-generations" => run_nix_env(vec!["--profile", "/nix/var/nix/profiles/system", "--list-generations"]),
         "rollback" => {
             if args.len() > 3 {
