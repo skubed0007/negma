@@ -264,7 +264,7 @@ fn handle_nix(args: &[String], cfg: &CFG) {
 
     match args[2].as_str() {
         "edit" => {
-            let config_path = "/etc/nixos";
+            let config_path = "/etc/nixos/configuration.nix";
             println!("{} Editing {}...", "[negma]".green().bold(), config_path.bright_black());
             let status = Command::new(&cfg.editor)
                 .arg(config_path)
