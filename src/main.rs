@@ -1,12 +1,12 @@
 use colored::*;
-use std::os::unix::fs::MetadataExt;
 use std::{
     env::{self, args},
     fs::{self, File},
     path::Path,
-    process::{Command, Stdio, exit},
+    process::{exit, Command, Stdio},
     time::{Duration, SystemTime},
 };
+use std::os::unix::fs::MetadataExt;
 
 pub mod config;
 use crate::config::CFG;
@@ -41,7 +41,7 @@ fn main() {
         "edit-cfg" => handle_edit_cfg(&cfg, &home_dir),
         "nix" => {
             if cfg.issu {
-                handle_nix(&args);
+                handle_nix(&args, &cfg);
             } else {
                 print_error(
                     "Nix commands require superuser privileges",
@@ -73,11 +73,7 @@ fn perform_auto_gc(cfg: &CFG, home_dir: &str) {
     if marker.exists() {
         let metadata = fs::metadata(&marker).unwrap();
         let birth_time = SystemTime::UNIX_EPOCH + Duration::from_secs(metadata.ctime() as u64);
-        if now
-            .duration_since(birth_time)
-            .unwrap_or(Duration::from_secs(0))
-            >= interval
-        {
+        if now.duration_since(birth_time).unwrap_or(Duration::from_secs(0)) >= interval {
             println!(
                 "{} Auto GC: Collecting garbage, keeping last {} generations...",
                 "[negma]".green().bold(),
@@ -120,11 +116,7 @@ fn handle_edit_cfg(cfg: &CFG, home_dir: &str) {
                     .status();
             }
         } else if !status.success() {
-            print_error(
-                "Editor exited with error",
-                Some(&format!("Code: {}", status)),
-                None,
-            );
+            print_error("Editor exited with error", Some(&format!("Code: {}", status)), None);
             exit(1);
         }
     } else {
@@ -143,22 +135,48 @@ fn handle_home(args: &[String], cfg: &CFG, home_dir: &str) {
         return;
     }
 
+    let home_config_dir = format!("{}/.config/home-manager", home_dir);
+
     match args[2].as_str() {
         "edit" => {
-            let file = format!("{}/.config/home-manager/home.nix", home_dir);
+            println!("{} Editing {}...", "[negma]".green().bold(), home_config_dir.bright_black());
             let status = Command::new(&cfg.editor)
-                .arg(&file)
+                .arg(&home_config_dir)
                 .stdin(Stdio::inherit())
                 .stdout(Stdio::inherit())
                 .stderr(Stdio::inherit())
                 .status();
-            exit_if_fail(status, "Editing home.nix failed");
+            exit_if_fail(status, "Editing home-manager config failed");
+
+            if cfg.auto_fmt {
+                if let Some(fmt) = &cfg.formatter {
+                    println!("{} Formatting {}...", "[negma]".green().bold(), home_config_dir.bright_black());
+                    let status = Command::new(fmt)
+                        .arg(&home_config_dir)
+                        .stdin(Stdio::inherit())
+                        .stdout(Stdio::inherit())
+                        .stderr(Stdio::inherit())
+                        .status();
+                    exit_if_fail(status, "Formatting home-manager config failed");
+                }
+            }
+        }
+        "fmt" => {
+            if let Some(fmt) = &cfg.formatter {
+                println!("{} Formatting {}...", "[negma]".green().bold(), home_config_dir.bright_black());
+                let status = Command::new(fmt)
+                    .arg(&home_config_dir)
+                    .stdin(Stdio::inherit())
+                    .stdout(Stdio::inherit())
+                    .stderr(Stdio::inherit())
+                    .status();
+                exit_if_fail(status, "Formatting home-manager config failed");
+            } else {
+                print_error("No formatter configured", None, Some("Set 'formatter' in negma config"));
+            }
         }
         "make" => {
-            println!(
-                "{} Applying home-manager switch...",
-                "[negma]".green().bold()
-            );
+            println!("{} Applying home-manager switch...", "[negma]".green().bold());
             let status = Command::new("home-manager")
                 .arg("switch")
                 .stdin(Stdio::inherit())
@@ -168,10 +186,7 @@ fn handle_home(args: &[String], cfg: &CFG, home_dir: &str) {
             exit_if_fail(status, "home-manager switch failed");
         }
         "gc" => {
-            println!(
-                "{} Expiring old home-manager generations...",
-                "[negma]".green().bold()
-            );
+            println!("{} Expiring old home-manager generations...", "[negma]".green().bold());
             let status = Command::new("home-manager")
                 .arg("expire-generations")
                 .arg("-d")
@@ -182,10 +197,7 @@ fn handle_home(args: &[String], cfg: &CFG, home_dir: &str) {
             exit_if_fail(status, "home-manager expire-generations failed");
         }
         "clean" => {
-            println!(
-                "{} Cleaning old Home Manager generations, keeping current...",
-                "[negma]".green().bold()
-            );
+            println!("{} Cleaning old Home Manager generations, keeping current...", "[negma]".green().bold());
             let status = Command::new("home-manager")
                 .arg("expire-generations")
                 .arg("0")
@@ -196,8 +208,8 @@ fn handle_home(args: &[String], cfg: &CFG, home_dir: &str) {
             exit_if_fail(status, "home-manager clean failed");
         }
         "backup" => {
-            let config_path = format!("{}/.config/home-manager/home.nix", home_dir);
-            let backup_path = format!("{}/.config/home-manager/home.nix.bak", home_dir);
+            let config_path = format!("{}/home.nix", home_config_dir);
+            let backup_path = format!("{}/home.nix.bak", home_config_dir);
 
             fs::copy(&config_path, &backup_path).unwrap_or_else(|e| {
                 print_error("Failed to backup home.nix", Some(&e.to_string()), None);
@@ -209,26 +221,8 @@ fn handle_home(args: &[String], cfg: &CFG, home_dir: &str) {
                 backup_path.bright_black()
             );
         }
-        "fmt" => {
-            println!(
-                "{} Formatting ~/.config/home-manager recursively...",
-                "[negma]".green().bold()
-            );
-            let status = Command::new(cfg.formatter.as_deref().unwrap_or("nixfmt"))
-                .arg("--")
-                .arg(format!("{}/.config/home-manager", home_dir))
-                .stdin(Stdio::inherit())
-                .stdout(Stdio::inherit())
-                .stderr(Stdio::inherit())
-                .status();
-            exit_if_fail(status, "Home Manager fmt failed");
-        }
-
         "list-generations" => {
-            println!(
-                "{} Listing home-manager generations...",
-                "[negma]".green().bold()
-            );
+            println!("{} Listing home-manager generations...", "[negma]".green().bold());
             let status = Command::new("home-manager")
                 .arg("generations")
                 .stdin(Stdio::inherit())
@@ -238,11 +232,7 @@ fn handle_home(args: &[String], cfg: &CFG, home_dir: &str) {
             exit_if_fail(status, "home-manager generations failed");
         }
         "rollback" => {
-            let r#gen = if args.len() > 3 {
-                &args[3]
-            } else {
-                "--rollback"
-            };
+            let r#gen = if args.len() > 3 { &args[3] } else { "--rollback" };
             println!("{} Rolling back home-manager...", "[negma]".green().bold());
             let status = Command::new("home-manager")
                 .args(&["switch", r#gen])
@@ -262,7 +252,7 @@ fn handle_home(args: &[String], cfg: &CFG, home_dir: &str) {
     }
 }
 
-fn handle_nix(args: &[String]) {
+fn handle_nix(args: &[String], cfg: &CFG) {
     if args.len() < 3 {
         print_error(
             "Missing subcommand for 'nix'",
@@ -272,58 +262,85 @@ fn handle_nix(args: &[String]) {
         return;
     }
 
-    let exec_args: Vec<String> = match args[2].as_str() {
-        "gc" => vec!["collect-garbage".into(), "-d".into()],
-        "make" => vec!["rebuild".into(), "switch".into()],
-        "list-generations" => vec![
-            "--profile".into(),
-            "/nix/var/nix/profiles/system".into(),
-            "--list-generations".into(),
-        ],
-        "fmt" => {
-            println!(
-                "{} Formatting /etc/nixos recursively...",
-                "[negma]".green().bold()
-            );
-            let status = Command::new("nixfmt")
-                .arg("--")
-                .arg("/etc/nixos")
+    match args[2].as_str() {
+        "edit" => {
+            let config_path = "/etc/nixos";
+            println!("{} Editing {}...", "[negma]".green().bold(), config_path.bright_black());
+            let status = Command::new(&cfg.editor)
+                .arg(config_path)
                 .stdin(Stdio::inherit())
                 .stdout(Stdio::inherit())
                 .stderr(Stdio::inherit())
                 .status();
-            exit_if_fail(status, "NixOS fmt failed");
-            return; // exit after formatting
-        }
+            exit_if_fail(status, "Failed to edit NixOS configuration");
 
-        "rollback" => {
-            if args.len() > 3 {
-                vec![
-                    "--profile".into(),
-                    "/nix/var/nix/profiles/system".into(),
-                    "--switch-generation".into(),
-                    args[3].clone(),
-                ]
-            } else {
-                vec![
-                    "--profile".into(),
-                    "/nix/var/nix/profiles/system".into(),
-                    "--rollback".into(),
-                ]
+            if cfg.auto_fmt {
+                if let Some(fmt) = &cfg.formatter {
+                    println!("{} Formatting {}...", "[negma]".green().bold(), config_path.bright_black());
+                    let status = Command::new(fmt)
+                        .arg(config_path)
+                        .stdin(Stdio::inherit())
+                        .stdout(Stdio::inherit())
+                        .stderr(Stdio::inherit())
+                        .status();
+                    exit_if_fail(status, "Failed to format NixOS configuration");
+                }
             }
         }
-        "clean" => vec![
-            "--profile".into(),
-            "/nix/var/nix/profiles/system".into(),
-            "--delete-generations".into(),
-            "old".into(),
-        ],
-        _ => args[2..].to_vec(),
-    };
+        "fmt" => {
+            if let Some(fmt) = &cfg.formatter {
+                let config_path = "/etc/nixos";
+                println!("{} Formatting {}...", "[negma]".green().bold(), config_path.bright_black());
+                let status = Command::new(fmt)
+                    .arg(config_path)
+                    .stdin(Stdio::inherit())
+                    .stdout(Stdio::inherit())
+                    .stderr(Stdio::inherit())
+                    .status();
+                exit_if_fail(status, "Failed to format NixOS configuration");
+            } else {
+                print_error("No formatter configured", None, Some("Set 'formatter' in negma config"));
+            }
+        }
+        "gc" => run_nix_env(vec!["collect-garbage", "-d"]),
+        "make" => run_nix_env(vec!["rebuild", "switch"]),
+        "list-generations" => run_nix_env(vec!["--profile", "/nix/var/nix/profiles/system", "--list-generations"]),
+        "rollback" => {
+            if args.len() > 3 {
+                run_nix_env(vec![
+                    "--profile",
+                    "/nix/var/nix/profiles/system",
+                    "--switch-generation",
+                    &args[3],
+                ]);
+            } else {
+                run_nix_env(vec![
+                    "--profile",
+                    "/nix/var/nix/profiles/system",
+                    "--rollback",
+                ]);
+            }
+        }
+        "clean" => run_nix_env(vec![
+            "--profile",
+            "/nix/var/nix/profiles/system",
+            "--delete-generations",
+            "old",
+        ]),
+        _ => {
+            print_error(
+                &format!("Unknown nix subcommand '{}'", args[2]),
+                None,
+                Some("Run 'negma' for available subcommands"),
+            );
+        }
+    }
+}
 
-    println!("{} Running nix command...", "[negma]".green().bold());
+fn run_nix_env(args: Vec<&str>) {
+    println!("{} Running nix-env {}...", "[negma]".green().bold(), args.join(" ").bright_black());
     let status = Command::new("nix-env")
-        .args(&exec_args)
+        .args(args)
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
@@ -359,136 +376,27 @@ fn print_error(title: &str, details: Option<&str>, hint: Option<&str>) {
         eprintln!("{} {}", "hint:".yellow().bold(), h.bright_white());
     }
 }
+
 fn print_help() {
-    println!(
-        "\n{}\n{}",
-        "[negma]".blue().bold(),
-        "A clean, practical NixOS & Home Manager CLI helper.".bright_white()
-    );
-
-    println!(
-        "\n{}  {}",
-        "Usage:".bright_white().underline(),
-        "negma <command> [subcommand] [args]".bright_yellow()
-    );
-
+    println!("\n{}\n{}", "[negma]".blue().bold(), "A clean, practical NixOS & Home Manager CLI helper.".bright_white());
+    println!("\n{} {}", "Usage:".bright_white().underline(), "negma <command> [subcommand] [args]".bright_yellow());
     println!("\n{}", "Commands:".bright_white().underline());
+    println!("  {} {}", "home".bright_cyan().bold(), "<subcommand>".bright_white());
+    println!("  {} {}", "nix".bright_cyan().bold(), "<subcommand>".bright_white());
+    println!("  {}", "edit-cfg".bright_cyan().bold());
 
-    println!(
-        "  {} {}\n    {}",
-        "home".bright_cyan().bold(),
-        "<subcommand>".bright_white(),
-        "Manage Home Manager configurations and generations.".bright_black()
-    );
+    println!("\n{}:", "Home Manager Subcommands".bright_white().underline());
+    println!("  edit, fmt, make, gc, clean, backup, list-generations, rollback [gen]");
 
-    println!(
-        "  {} {}\n    {}",
-        "nix".bright_cyan().bold(),
-        "<subcommand>".bright_white(),
-        "Manage NixOS system generations and GC (requires sudo).".bright_black()
-    );
+    println!("\n{}:", "NixOS Subcommands (requires sudo)".bright_white().underline());
+    println!("  edit, fmt, make, gc, clean, list-generations, rollback [gen]");
 
-    println!(
-        "  {}\n    {}",
-        "edit-cfg".bright_cyan().bold(),
-        "Edit negma configuration with your preferred editor.".bright_black()
-    );
+    println!("\n{}:", "Examples".bright_white().underline());
+    println!("  negma home edit");
+    println!("  negma home fmt");
+    println!("  sudo negma nix edit");
+    println!("  sudo negma nix fmt");
+    println!("  negma edit-cfg");
 
-    println!(
-        "\n{}",
-        "Home Manager Subcommands:".bright_white().underline()
-    );
-
-    println!(
-        "  {:18} {}",
-        "edit".bright_yellow(),
-        "Edit your home.nix in configured editor.".bright_black()
-    );
-    println!(
-        "  {:18} {}",
-        "fmt".bright_yellow(),
-        "Format your entire Home Manager config folder.".bright_black()
-    );
-
-    println!(
-        "  {:18} {}",
-        "make".bright_yellow(),
-        "Apply Home Manager configuration.".bright_black()
-    );
-    println!(
-        "  {:18} {}",
-        "gc".bright_yellow(),
-        "Expire old Home Manager generations.".bright_black()
-    );
-    println!(
-        "  {:18} {}",
-        "clean".bright_yellow(),
-        "Remove all generations except current.".bright_black()
-    );
-    println!(
-        "  {:18} {}",
-        "backup".bright_yellow(),
-        "Backup your home.nix to home.nix.bak.".bright_black()
-    );
-    println!(
-        "  {:18} {}",
-        "list-generations".bright_yellow(),
-        "List available Home Manager generations.".bright_black()
-    );
-    println!(
-        "  {:18} {}",
-        "rollback [gen]".bright_yellow(),
-        "Rollback to a previous generation.".bright_black()
-    );
-
-    println!(
-        "\n{}",
-        "NixOS Subcommands (requires sudo):"
-            .bright_white()
-            .underline()
-    );
-
-    println!(
-        "  {:18} {}",
-        "make".bright_yellow(),
-        "Rebuild and switch to the new system configuration.".bright_black()
-    );
-    println!(
-        "  {:18} {}",
-        "gc".bright_yellow(),
-        "Garbage collect old system generations.".bright_black()
-    );
-    println!(
-        "  {:18} {}",
-        "clean".bright_yellow(),
-        "Delete all old generations, keep current.".bright_black()
-    );
-    println!(
-        "  {:18} {}",
-        "list-generations".bright_yellow(),
-        "List system generations.".bright_black()
-    );
-    println!(
-        "  {:18} {}",
-        "rollback [gen]".bright_yellow(),
-        "Rollback to a previous system generation.".bright_black()
-    );
-    println!(
-        "  {:18} {}",
-        "fmt".bright_yellow(),
-        "Format your entire /etc/nixos folder.".bright_black()
-    );
-
-    println!("\n{}", "Examples:".bright_white().underline());
-
-    println!("  {}", "negma home make".bright_green());
-    println!("  {}", "negma home clean".bright_green());
-    println!("  {}", "negma edit-cfg".bright_green());
-    println!("  {}", "sudo negma nix clean".bright_green());
-    println!("  {}", "sudo negma nix rollback 42".bright_green());
-
-    println!(
-        "\n{}",
-        "Keep your NixOS clean and your workflow calm".bright_purple()
-    );
+    println!("\n{}", "✨ Keep your NixOS clean and workflow calm with negma ✨".bright_purple());
 }
