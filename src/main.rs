@@ -142,6 +142,7 @@ fn handle_home(args: &[String], cfg: &CFG, home_dir: &str) {
             println!("{} Editing {}...", "[negma]".green().bold(), home_config_dir.bright_black());
             let status = Command::new(&cfg.editor)
                 .arg(&home_config_dir)
+                .arg("/home.nix")
                 .stdin(Stdio::inherit())
                 .stdout(Stdio::inherit())
                 .stderr(Stdio::inherit())
